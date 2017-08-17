@@ -13,31 +13,72 @@
 include 'wp-load.php';
 global $wpdb;
 global $comment_plus;
-$limit = 1000; //change this for processing less subs. in one step
+
+$limit = 2000; //change this for processing less subs. in one step
 $start = (isset($_GET['start'])) ? $_GET['start'] : 0;
-$postmeta = (isset($_GET['postmeta'])) ? $_GET['postmeta'] : 'wp_postmeta';
-$comments = (isset($_GET['comments'])) ? $_GET['comments'] : 'wp_comments';
-$user_subs = $wpdb->get_results(  "SELECT * FROM $postmeta 
-                                  WHERE meta_key LIKE '_stcr@_%' 
-                                  AND meta_value NOT LIKE '%C' 
+$postmeta = (isset($_GET['postmeta'])) ? $_GET['postmeta'] : $wpdb->postmeta;
+$comments = (isset($_GET['comments'])) ? $_GET['comments'] : $wpdb->comments;
+$user_subs = $wpdb->get_results(  "SELECT * FROM $postmeta
+                                  WHERE meta_key LIKE '_stcr@_%'
+                                  AND meta_value NOT LIKE '%C'
                                   LIMIT $start,$limit");
 $start_time = time();
+
 foreach( $user_subs as $sub ){
-  $post_id = $sub->post_id;
+  
+  $post_id  = $sub->post_id;
   $comment_id = 0;
   $email = str_replace('_stcr@_','',$sub->meta_key);
-  $name = $wpdb->get_var("SELECT comment_author FROM $comments WHERE comment_author_email = '$email' LIMIT 1");
+  $name = '';
+  $debug_value = $sub->meta_value;
+
+  if( !preg_match( '~(.+)\|(.+)~', $sub->meta_value, $matches ) ) {
+    file_put_contents('subsribers_migration.txt',"Error; $post_id; $comment_id; $email; $name; $debug_value;\n", FILE_APPEND);
+    continue;
+  }
+
+  $time = strtotime( $matches[1] );
+  $start_date = date( "Y-m-d H:i:s", $time - 5 );
+  $end_date = date( "Y-m-d H:i:s", $time + 5 );
+
+  // Get exact comment
+  $comment = $wpdb->get_row("SELECT * FROM $comments WHERE comment_post_ID = $post_id AND comment_author_email = '$email' AND comment_date > '$start_date' AND comment_date < '$end_date' LIMIT 1");
   
-  if( $name == NULL ){
-    $name = '';
+  // Alternative
+  if( empty( $comment ) ) {
+   $comment = $wpdb->get_row("SELECT * FROM $comments WHERE comment_post_ID = $post_id AND comment_author_email = '$email' AND comment_parent = 0 LIMIT 1");
+  }
+
+  // Last chance
+  if( empty( $comment ) ) {
+   $comment = $wpdb->get_row("SELECT * FROM $comments WHERE comment_post_ID = $post_id AND comment_author_email = '$email'");
+  }
+
+  // try retrive name
+  if( !empty($comment->comment_author) ) {
+    $name = $comment->comment_author;
+  }
+
+  // get comment id if user is subscribed to replies
+  if( stripos( $matches[2], 'R' ) !== false && !empty( $comment->comment_ID ) ) {
+    $comment_id = $comment->comment_ID;
   }
   
-  $debug_value = $sub->meta_value;
-  
-  $comment_plus->subscribe($post_id, $email, $name);
-  file_put_contents('subsribers_migration.txt',"$post_id; $email; $name; $debug_value;\n", FILE_APPEND);
+  if( $comment_id ) {
+    // subscribe to specific thread
+    $comment_plus->subscribe_thread($post_id, $comment_id, $email, $name);
+    file_put_contents('subsribers_migration.txt',"Thread; $post_id; $comment_id; $email; $name; $debug_value;\n", FILE_APPEND);
+  }
+  else {
+    // subscribe to all replies
+    $comment_plus->subscribe($post_id, $email, $name);
+    file_put_contents('subsribers_migration.txt',"Comment; $post_id; $comment_id; $email; $name; $debug_value;\n", FILE_APPEND);
+  }
 }
+
 $duration = time() - $start_time;
+
 file_put_contents('subsribers_migration.txt',"####### ".date('r')." N:$start duration: $duration s #######\n", FILE_APPEND);
-die('ok');
+
+die('DONE');
 ?>
